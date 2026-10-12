@@ -6,16 +6,46 @@ Structured-output wrapper around the [deepcode-cli](https://github.com/lessweb/d
 
 The engine (`@vegamo/deepcode-core`, not on npm) is vendored in `vendor/deepcode-core`; see its `UPSTREAM.md`.
 
-## Install / build
+## Install
+
+Needs **Node.js >= 22** (`dsh` runs `node`, so it must be on `PATH` wherever the orchestrator spawns it).
 
 ```bash
-npm install && npm run build      # Node >= 22
-npm link                          # optional: puts `dsh` on PATH
+curl -fsSL https://raw.githubusercontent.com/coderbuzz/dsh/main/install.sh | sh
+dsh --version
 ```
 
-API key: `DEEPCODE_API_KEY` env var, or `~/.deepcode/settings.json` (same config as deepcode-cli;
+The installer puts the package in its own prefix (`~/.local/share/dsh`, so a Node version switch does not remove it)
+and links `dsh` into `~/.local/bin`. If that directory is not on your `PATH` it prints the line to add. It is
+idempotent: running it again upgrades. Options (flags after `sh -s --`, or env vars):
+
+| Flag | Env | Default |
+|---|---|---|
+| `--version <v>` | `DSH_VERSION` | `latest` (pin one for reproducible installs) |
+| `--prefix <dir>` | `DSH_PREFIX` | `~/.local/share/dsh` |
+| `--bin-dir <dir>` | `DSH_BIN_DIR` | `~/.local/bin` (use `/usr/local/bin` for all users, with sudo) |
+| `--uninstall` | | removes the prefix and the link (only a link that points into the prefix) |
+| | `DSH_REGISTRY` | `https://registry.npmjs.org` |
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/coderbuzz/dsh/main/install.sh | sh -s -- --version 0.1.2 --bin-dir /usr/local/bin
+```
+
+Other ways: `npm i -g @coderbuzz/dsh` (SDK users: `npm i @coderbuzz/dsh`), or from source:
+`git clone https://github.com/coderbuzz/dsh && cd dsh && npm ci && npm run build && npm link`.
+Releases are published from CI with npm provenance; the installer script is a plain POSIX `sh` file you can read first.
+
+## Configure
+
+API key: `DEEPCODE_API_KEY` env var, or `~/.deepcode/settings.json` (same file as deepcode-cli;
 also `DEEPCODE_BASE_URL`, `DEEPCODE_MODEL`, ...). Sessions are stored under `~/.deepcode/`.
 Upstream telemetry (a ping per prompt) is **off** in dsh; only `DEEPCODE_TELEMETRY_ENABLED=true` turns it on.
+
+```bash
+export DEEPCODE_API_KEY=sk-...
+dsh models                                  # lists models (falls back to a built-in list offline)
+dsh -p "say hi in one word" --json          # first run
+```
 
 ## CLI
 
@@ -121,7 +151,9 @@ Node OpenAI SDK passes through as a literal key and DeepSeek ignores; dsh patche
 
 `npm test` builds and runs an end-to-end test against a fake DeepSeek server (no key needed):
 a tool call, a resume, overrides, usage accounting, a stable message prefix, plan mode without bash,
-timeout killing child processes, parallel runs in one project, and telemetry staying off.
+timeout killing child processes, parallel runs in one project, telemetry staying off, the API key hidden from the agent's
+shell, and `install.sh` (install, rerun, uninstall, never overwriting a foreign file) on the packed tarball.
+The installer test needs network access for the dependencies (~20 s).
 
 ## Release
 
