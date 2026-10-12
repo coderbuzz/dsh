@@ -155,12 +155,18 @@ export function toNativeCwd(shellCwd: string): string {
 }
 
 export function buildShellEnv(shellPath: string, extraEnv: Record<string, string> = {}): NodeJS.ProcessEnv {
+  // dsh patch: the model's shell must not see the provider credentials. They come in twice: as
+  // DEEPCODE_* process env vars and, prefix stripped, inside `extraEnv` (settings.env + DEEPCODE_*).
+  // Anything the shell prints ends up in tool output, the JSON result and orchestrator logs.
+  const { API_KEY: _apiKey, PLUS_API_KEY: _plusApiKey, ...safeExtraEnv } = extraEnv;
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    ...extraEnv,
+    ...safeExtraEnv,
     SHELL: shellPath,
     GIT_EDITOR: "true",
   };
+  delete env["DEEPCODE_API_KEY"];
+  delete env["DEEPCODE_PLUS_API_KEY"];
 
   if (process.platform === "win32") {
     const tmpdir = windowsPathToPosixPath(os.tmpdir());
