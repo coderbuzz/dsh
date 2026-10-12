@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs";
 import os from "node:os";
@@ -35,7 +35,10 @@ const server = http.createServer(async (req, res) => {
   if (last.role === "user" && JSON.stringify(last.content).includes("again")) return sse(res, { role: "assistant", reasoning_content: "thought-3", content: "again-done" }, true);
   const user = JSON.stringify(json.messages.filter((m) => m.role === "user").at(-1)?.content);
   if (user.includes("PARALLEL")) return sse(res, { role: "assistant", content: "parallel-done" }, true);
-  const command = user.includes("SLEEP")
+  if (user.includes("BIGREPLY")) return sse(res, { role: "assistant", content: "x".repeat(200000) }, true);
+  const command = user.includes("BIGFAIL")
+    ? "head -c 200000 /dev/zero | tr '\\0' y; sleep 37.25"
+    : user.includes("SLEEP")
     ? "sleep 37.25"
     : user.includes("ENVCHECK")
       ? "env | grep -E '^(DEEPCODE_)?(PLUS_)?API_KEY=' | wc -l; echo MARK=$MARK USERVAR=${OTHER_API_KEY:-unset}"
@@ -169,4 +172,36 @@ test("agent bash does not see the provider API key, but keeps other env", async 
   // 0 = none of DEEPCODE_API_KEY, DEEPCODE_PLUS_API_KEY and the prefix-stripped API_KEY/PLUS_API_KEY reach the shell;
   // the user's own variables (even ones ending in API_KEY) are untouched.
   assert.equal(r.toolExecutions[0].process_stdout, "0\nMARK=kept USERVAR=mine\n");
+});
+
+// Regression: stdout read through a slow pipe was cut at 64 KiB because the CLI called process.exit
+// before the pipe drained. The reader here waits before consuming, so the pipe buffer fills.
+const viaSlowPipe = (args) => new Promise((resolve) => {
+  const child = spawn("node", [cli, ...args], { cwd, env, stdio: ["ignore", "pipe", "ignore"] });
+  const chunks = [];
+  child.stdout.pause();
+  setTimeout(() => { child.stdout.on("data", (c) => chunks.push(c)); child.stdout.resume(); }, 1500);
+  child.on("close", (code) => resolve({ code, out: Buffer.concat(chunks).toString() }));
+});
+
+test("--json output over 64 KiB survives a slow pipe", async () => {
+  const { code, out } = await viaSlowPipe(["--json", "BIGREPLY"]);
+  assert.equal(code, 0);
+  assert.equal(JSON.parse(out).reply.length, 200000);
+});
+
+test("--stream-json output over 64 KiB survives a slow pipe", async () => {
+  const { code, out } = await viaSlowPipe(["--stream-json", "BIGREPLY"]);
+  assert.equal(code, 0);
+  const lines = out.trimEnd().split("\n");
+  assert.ok(out.length > 65536);
+  for (const l of lines) JSON.parse(l);
+});
+
+test("failed run (exit 1) with output over 64 KiB stays intact", async () => {
+  const { code, out } = await viaSlowPipe(["--json", "--timeout", "2", "BIGFAIL"]);
+  assert.equal(code, 1);
+  const r = JSON.parse(out);
+  assert.match(r.failReason, /timeout/);
+  assert.ok(out.length > 65536);
 });
