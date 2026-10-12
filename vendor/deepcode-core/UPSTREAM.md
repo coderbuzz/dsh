@@ -6,6 +6,7 @@
 - Copied: `src/` (without `src/tests/`) and `templates/`.
 - Local patches in `vendor/patches/` (applied by the sync script):
   - `reasoning-effort-top-level.patch`: `reasoning_effort` sent top level instead of `extra_body` (DeepSeek ignores `extra_body` from the Node SDK; upstream bug).
+  - `scrub-api-key.patch`: the bash tool's shell no longer inherits `DEEPCODE_API_KEY`, `DEEPCODE_PLUS_API_KEY` or the stripped `API_KEY`/`PLUS_API_KEY` from settings env.
   - `orchestrator.patch`: `disallowedTools` setting (tool removed from schema and docs, refused if called), and a lock file + atomic write for `sessions-index.json` so parallel runs in one project do not lose sessions.
 
 Why vendored: `@vegamo/deepcode-core` is not published on npm.

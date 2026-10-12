@@ -35,7 +35,11 @@ const server = http.createServer(async (req, res) => {
   if (last.role === "user" && JSON.stringify(last.content).includes("again")) return sse(res, { role: "assistant", reasoning_content: "thought-3", content: "again-done" }, true);
   const user = JSON.stringify(json.messages.filter((m) => m.role === "user").at(-1)?.content);
   if (user.includes("PARALLEL")) return sse(res, { role: "assistant", content: "parallel-done" }, true);
-  const command = user.includes("SLEEP") ? "sleep 37.25" : "echo hello-dsh";
+  const command = user.includes("SLEEP")
+    ? "sleep 37.25"
+    : user.includes("ENVCHECK")
+      ? "env | grep -E '^(DEEPCODE_)?(PLUS_)?API_KEY=' | wc -l; echo MARK=$MARK USERVAR=${OTHER_API_KEY:-unset}"
+      : "echo hello-dsh";
   sse(res, {
     role: "assistant",
     reasoning_content: "thought-1",
@@ -128,7 +132,12 @@ test("timeout stops the run and kills its child processes", async () => {
   assert.equal(r.status, "failed");
   assert.match(r.failReason, /timeout/);
   assert.ok(Date.now() - t0 < 15_000);
-  const left = await run("pgrep", ["-f", "sleep 37.25"]).then((o) => o.stdout, () => "");
+  // SIGKILL reaches the child asynchronously: poll briefly instead of asserting at the instant dsh exits.
+  let left = "x";
+  for (let i = 0; i < 20 && left !== ""; i++) {
+    left = await run("pgrep", ["-f", "sleep 37.25"]).then((o) => o.stdout, () => "");
+    if (left !== "") await new Promise((r) => setTimeout(r, 100));
+  }
   assert.equal(left, "", "sleep child was killed");
 });
 
@@ -151,4 +160,13 @@ test("telemetry is off unless DEEPCODE_TELEMETRY_ENABLED=true", async () => {
   assert.doesNotMatch(off.stderr, /\/api\/plugin\/new/);
   const on = await runWith({ DEEPCODE_TELEMETRY_ENABLED: "true" });
   assert.match(on.stderr, /\/api\/plugin\/new/, "probe sees telemetry when enabled");
+});
+
+test("agent bash does not see the provider API key, but keeps other env", async () => {
+  const out = await run("node", [cli, "--json", "ENVCHECK"], { cwd, env: { ...env, DEEPCODE_PLUS_API_KEY: "sk-x", MARK: "kept", OTHER_API_KEY: "mine" } });
+  const r = JSON.parse(out.stdout);
+  assert.equal(r.status, "completed", r.failReason);
+  // 0 = none of DEEPCODE_API_KEY, DEEPCODE_PLUS_API_KEY and the prefix-stripped API_KEY/PLUS_API_KEY reach the shell;
+  // the user's own variables (even ones ending in API_KEY) are untouched.
+  assert.equal(r.toolExecutions[0].process_stdout, "0\nMARK=kept USERVAR=mine\n");
 });

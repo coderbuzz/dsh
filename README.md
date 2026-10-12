@@ -42,6 +42,8 @@ No TTY to ask, so nothing ever prompts. `--mode` (same names as zh) picks a pres
 | `edit` | reads, writes/deletes inside cwd and tmp, network, MCP | writes/deletes outside cwd, git history changes |
 | `plan` | reads, network, MCP | all writes and deletes, git history changes |
 
+The agent's shell does not inherit the provider credentials (`DEEPCODE_API_KEY`, `DEEPCODE_PLUS_API_KEY`); other environment variables are passed through.
+
 Bash commands declare their own scopes (the model fills `sideEffects`), so a mode is not a boundary for bash.
 For a read-only agent also pass `--disallowed-tools bash`: the tool leaves the schema and the system prompt,
 and a call to it anyway is refused. SDK: `createHarness({ mode, permissions, disallowedTools })`.
