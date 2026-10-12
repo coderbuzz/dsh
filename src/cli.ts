@@ -122,9 +122,10 @@ async function readStdin(): Promise<string> {
 }
 
 main().then(
-  (code) => process.exit(code),
+  // exitCode, not process.exit(): exit() drops stdout still queued on a pipe (cut at 64 KiB for large results).
+  (code) => void (process.exitCode = code),
   (err) => {
     process.stderr.write(`dsh: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
+    process.exitCode = 1;
   }
 );

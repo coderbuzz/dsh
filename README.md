@@ -58,7 +58,7 @@ dsh --json -C /repo --mode plan --disallowed-tools bash --timeout 900 -p "$PROMP
 dsh models --json [--refresh]
 ```
 
-Exit codes: `0` completed, `1` failed or waiting_for_user, `130` interrupted (SIGINT/SIGTERM).
+Exit codes: `0` completed, `1` failed or waiting_for_user, `130` interrupted (SIGINT/SIGTERM). The result is written in full before exit, so output over 64 KiB read through a pipe stays valid JSON (fixed in 0.1.4; 0.1.2 and earlier cut it at 65,536 bytes).
 `--timeout <s>` stops the run, kills its child processes and reports `failed` with `failReason: "timeout ..."`.
 `-p <text>` takes the next argument verbatim, also when it starts with `-`. `-e disabled` = `--no-thinking`.
 
