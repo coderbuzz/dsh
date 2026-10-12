@@ -121,6 +121,11 @@ Node OpenAI SDK passes through as a literal key and DeepSeek ignores; dsh patche
 a tool call, a resume, overrides, usage accounting, a stable message prefix, plan mode without bash,
 timeout killing child processes, parallel runs in one project, and telemetry staying off.
 
+## Release
+
+Bump `version` in `package.json`, merge, then push tag `vX.Y.Z`: `.github/workflows/release.yml` tests and publishes
+to npm with Trusted Publishing (OIDC, provenance, no token).
+
 ## Upstream sync
 
 `scripts/sync-upstream.sh <ref>` re-vendors `packages/core` and re-applies `vendor/patches/`.

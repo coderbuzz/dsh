@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "description": "DeepSeek harness for orchestrators: structured JSON SDK and CLI on top of the deepcode-cli engine",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coderbuzz/dsh.git"
+  },
+  "homepage": "https://github.com/coderbuzz/dsh#readme",
   "type": "module",
   "bin": {
     "dsh": "./dist/cli.js"
