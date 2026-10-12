@@ -1,0 +1,52 @@
+{
+  "name": "@coderbuzz/dsh",
+  "version": "0.1.0",
+  "description": "DeepSeek harness for orchestrators: structured JSON SDK and CLI on top of the deepcode-cli engine",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "dsh": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/types/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/src/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/**",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "chalk": "^5.6.2",
+    "ejs": "^5.0.2",
+    "gray-matter": "^4.0.3",
+    "ignore": "^7.0.5",
+    "openai": "^6.35.0",
+    "undici": "^7.30.0",
+    "zod": "^4.4.3"
+  },
+  "optionalDependencies": {
+    "sharp": "^0.35.3"
+  },
+  "devDependencies": {
+    "@types/ejs": "^3.1.5",
+    "@types/node": "^25.6.0",
+    "esbuild": "^0.28.0",
+    "typescript": "^6.0.3"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  }
+}
