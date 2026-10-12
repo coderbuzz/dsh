@@ -98,7 +98,14 @@ export type PromptToolOptions = {
   multimodal?: MultimodalMode;
   webSearchEnabled?: boolean;
   nonInteractive?: boolean;
+  /** dsh patch: tool names removed from the schema and the tool docs (e.g. ["bash"]). */
+  disallowedTools?: string[];
 };
+
+/** dsh patch: tool doc file stem for a tool name (ReadImage -> read-image). */
+function toolDocName(toolName: string): string {
+  return toolName.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase();
+}
 
 const DEFAULT_SKILL_RESOURCE_FILE_LIMIT = 50;
 const SKILL_RESOURCE_EXCLUDED_DIRS = new Set([
@@ -135,6 +142,7 @@ function readToolDocs(extensionRoot: string, options: PromptToolOptions = {}): s
   const docs = entries
     .filter((entry) => entry.endsWith(".md") || entry.endsWith(".md.ejs"))
     .filter((entry) => options.nonInteractive !== true || entry !== "ask-user-question.md")
+    .filter((entry) => !(options.disallowedTools ?? []).some((name) => entry.replace(/\.md(\.ejs)?$/, "") === toolDocName(name)))
     .sort()
     .map((entry) => {
       const fullPath = path.join(toolsDir, entry);
@@ -750,5 +758,6 @@ export function getTools(_options: PromptToolOptions = {}, externalTools: ToolDe
     tools.push(tool);
   }
 
-  return tools;
+  const disallowed = _options.disallowedTools ?? [];
+  return disallowed.length ? tools.filter((tool) => !disallowed.includes(tool.function.name)) : tools;
 }

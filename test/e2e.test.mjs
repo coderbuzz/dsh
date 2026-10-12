@@ -33,28 +33,33 @@ const server = http.createServer(async (req, res) => {
   const last = json.messages.at(-1);
   if (last.role === "tool") return sse(res, { role: "assistant", reasoning_content: "thought-2", content: "done" }, true);
   if (last.role === "user" && JSON.stringify(last.content).includes("again")) return sse(res, { role: "assistant", reasoning_content: "thought-3", content: "again-done" }, true);
+  const user = JSON.stringify(json.messages.filter((m) => m.role === "user").at(-1)?.content);
+  if (user.includes("PARALLEL")) return sse(res, { role: "assistant", content: "parallel-done" }, true);
+  const command = user.includes("SLEEP") ? "sleep 37.25" : "echo hello-dsh";
   sse(res, {
     role: "assistant",
     reasoning_content: "thought-1",
-    tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "bash", arguments: JSON.stringify({ command: "echo hello-dsh" }) } }],
+    tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "bash", arguments: JSON.stringify({ command }) } }],
   }, true);
 });
 
 const run = promisify(execFile);
 const cli = path.resolve("dist/cli.js");
 
-test("cli --json, then --stream-json resume", async (t) => {
+let cwd, env;
+test.before(async () => {
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  t.after(() => server.close());
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-home-"));
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-proj-"));
-  const env = {
+  cwd = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-proj-"));
+  env = {
     ...process.env,
-    HOME: home,
+    HOME: fs.mkdtempSync(path.join(os.tmpdir(), "dsh-home-")),
     DEEPCODE_API_KEY: "test",
     DEEPCODE_BASE_URL: `http://127.0.0.1:${server.address().port}`,
-    DEEPCODE_TELEMETRY_ENABLED: "false",
   };
+});
+test.after(() => server.close());
+
+test("cli --json, then --stream-json resume", async () => {
 
   const first = await run("node", [cli, "--json", "-m", "deepseek-v4-pro", "-e", "high", "-t", "0.3", "say hi"], { cwd, env });
   const r1 = JSON.parse(first.stdout);
@@ -101,4 +106,49 @@ test("cli --json, then --stream-json resume", async (t) => {
 
   const models = JSON.parse((await run("node", [cli, "models", "--json", "--refresh"], { cwd, env })).stdout);
   assert.deepEqual(models.map((m) => m.id), ["deepseek-v4-pro"]);
+});
+
+test("plan mode without bash: tool removed and refused if called anyway", async () => {
+  const n = requests.length;
+  const out = await run("node", [cli, "--json", "--mode", "plan", "--disallowed-tools", "Bash", "-p", "-- say hi"], { cwd, env });
+  const r = JSON.parse(out.stdout);
+  assert.equal(r.status, "completed", r.failReason);
+  const req = requests[n];
+  assert.ok(!req.tools.some((t) => t.function.name === "bash"), "bash not offered");
+  assert.ok(!req.messages[0].content.includes("## Bash"), "bash docs not in system prompt");
+  assert.equal(r.toolExecutions[0].result.ok, false);
+  assert.match(r.toolExecutions[0].result.error, /not available/);
+  assert.equal(r.toolExecutions[0].process_stdout, "", "nothing ran");
+});
+
+test("timeout stops the run and kills its child processes", async () => {
+  const t0 = Date.now();
+  const err = await run("node", [cli, "--json", "--timeout", "2", "SLEEP please"], { cwd, env }).catch((e) => e);
+  const r = JSON.parse(err.stdout);
+  assert.equal(r.status, "failed");
+  assert.match(r.failReason, /timeout/);
+  assert.ok(Date.now() - t0 < 15_000);
+  const left = await run("pgrep", ["-f", "sleep 37.25"]).then((o) => o.stdout, () => "");
+  assert.equal(left, "", "sleep child was killed");
+});
+
+test("parallel runs in one project keep every session resumable", async () => {
+  const outs = await Promise.all([1, 2, 3, 4].map((i) => run("node", [cli, "--json", `PARALLEL ${i}`], { cwd, env })));
+  const ids = outs.map((o) => JSON.parse(o.stdout).sessionId);
+  for (const id of ids) {
+    const r = JSON.parse((await run("node", [cli, "--json", "-r", id, "PARALLEL again"], { cwd, env }).catch((e) => e)).stdout);
+    assert.equal(r.status, "completed", `session ${id}: ${r.failReason}`);
+  }
+});
+
+test("telemetry is off unless DEEPCODE_TELEMETRY_ENABLED=true", async () => {
+  // Preload: record every global fetch URL on stderr and answer locally (telemetry uses global fetch).
+  const spy = "data:text/javascript," + encodeURIComponent(
+    "const f=globalThis.fetch;globalThis.fetch=(u,o)=>{const s=String(u);if(!s.startsWith('http://127.0.0.1')){process.stderr.write('FETCH '+s+'\\n');return Promise.resolve(new Response('{}'))}return f(u,o)}"
+  );
+  const runWith = (extra) => run("node", ["--import", spy, cli, "--json", "PARALLEL telemetry"], { cwd, env: { ...env, ...extra } });
+  const off = await runWith({});
+  assert.doesNotMatch(off.stderr, /\/api\/plugin\/new/);
+  const on = await runWith({ DEEPCODE_TELEMETRY_ENABLED: "true" });
+  assert.match(on.stderr, /\/api\/plugin\/new/, "probe sees telemetry when enabled");
 });

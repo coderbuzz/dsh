@@ -15,7 +15,7 @@ npm link                          # optional: puts `dsh` on PATH
 
 API key: `DEEPCODE_API_KEY` env var, or `~/.deepcode/settings.json` (same config as deepcode-cli;
 also `DEEPCODE_BASE_URL`, `DEEPCODE_MODEL`, ...). Sessions are stored under `~/.deepcode/`.
-Upstream telemetry is on by default; set `DEEPCODE_TELEMETRY_ENABLED=false` to turn it off.
+Upstream telemetry (a ping per prompt) is **off** in dsh; only `DEEPCODE_TELEMETRY_ENABLED=true` turns it on.
 
 ## CLI
 
@@ -24,11 +24,32 @@ dsh --json "fix the failing test"                        # one JSON result
 dsh --stream-json -m deepseek-v4-pro -e high "..."       # NDJSON events, last line {"type":"result",...}
 dsh --json -r <sessionId> "now add a changelog entry"    # continue: prefix cache stays hot
 echo "prompt" | dsh --json --no-thinking -t 0.2
+dsh --json -C /repo --mode plan --disallowed-tools bash --timeout 900 -p "$PROMPT"   # read-only agent
 dsh models --json [--refresh]
 ```
 
-Exit codes: `0` completed, `1` failed or waiting_for_user, `130` interrupted (SIGINT).
-Permissions default to allow-all (no TTY to ask). Run it only where the agent may touch the files.
+Exit codes: `0` completed, `1` failed or waiting_for_user, `130` interrupted (SIGINT/SIGTERM).
+`--timeout <s>` stops the run, kills its child processes and reports `failed` with `failReason: "timeout ..."`.
+`-p <text>` takes the next argument verbatim, also when it starts with `-`. `-e disabled` = `--no-thinking`.
+
+### Permissions
+
+No TTY to ask, so nothing ever prompts. `--mode` (same names as zh) picks a preset:
+
+| mode | allowed | denied (the model gets an error and continues) |
+|---|---|---|
+| `yolo` (default) | everything | nothing |
+| `edit` | reads, writes/deletes inside cwd and tmp, network, MCP | writes/deletes outside cwd, git history changes |
+| `plan` | reads, network, MCP | all writes and deletes, git history changes |
+
+Bash commands declare their own scopes (the model fills `sideEffects`), so a mode is not a boundary for bash.
+For a read-only agent also pass `--disallowed-tools bash`: the tool leaves the schema and the system prompt,
+and a call to it anyway is refused. SDK: `createHarness({ mode, permissions, disallowedTools })`.
+
+### Parallel runs
+
+Several `dsh` processes may run in one project at once: the session index is written atomically under a lock file.
+Runs on one SDK harness must not overlap (use one harness per concurrent run).
 
 ## SDK
 
@@ -45,7 +66,7 @@ const b = await h.run("step 2", { sessionId: a.sessionId });
 h.dispose();
 ```
 
-Runs on one harness must not overlap. `createHarness({ permissions })` overrides the allow-all default.
+`run(prompt, { timeoutMs, signal })` stops a run; aborting kills its child processes.
 
 ### Result
 
@@ -86,7 +107,7 @@ appends to it. Measured on the real API (2026-10-12): 91-98% cache hits on conti
 
 `low | high | max`, sent as top-level `reasoning_effort`. Upstream sends it inside `extra_body`, which the
 Node OpenAI SDK passes through as a literal key and DeepSeek ignores; dsh patches this
-(`vendor/patches/reasoning-effort-top-level.patch`).
+(`vendor/patches/reasoning-effort-top-level.patch`). `--effort disabled` turns thinking off.
 
 ## Models
 
@@ -97,7 +118,8 @@ Node OpenAI SDK passes through as a literal key and DeepSeek ignores; dsh patche
 ## Tests
 
 `npm test` builds and runs an end-to-end test against a fake DeepSeek server (no key needed):
-a tool call, a resume, overrides, usage accounting, and a stable message prefix.
+a tool call, a resume, overrides, usage accounting, a stable message prefix, plan mode without bash,
+timeout killing child processes, parallel runs in one project, and telemetry staying off.
 
 ## Upstream sync
 

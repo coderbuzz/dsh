@@ -380,6 +380,7 @@ export type SessionManagerOptions = {
     mcpServers?: Record<string, McpServerConfig>;
     permissions?: Required<PermissionSettings>;
     enabledSkills?: Record<string, boolean>;
+    disallowedTools?: string[];
   };
   renderMarkdown: (text: string) => string;
   onAssistantMessage: (message: SessionMessage, shouldConnect: boolean) => void;
@@ -429,6 +430,7 @@ export class SessionManager {
     mcpServers?: Record<string, McpServerConfig>;
     permissions?: Required<PermissionSettings>;
     enabledSkills?: Record<string, boolean>;
+    disallowedTools?: string[];
   };
   private readonly onAssistantMessage: (message: SessionMessage, shouldConnect: boolean) => void;
   private readonly onSessionEntryUpdated?: (entry: SessionEntry) => void;
@@ -1486,6 +1488,7 @@ ${agentInstructions}
     userPrompt = this.preparePromptImages(sessionId, userPrompt);
     this.ensureFileHistorySession(sessionId);
     const now = new Date().toISOString();
+    const unlockIndex = this.lockSessionsIndex();
     const index = this.loadSessionsIndex();
     const entry: SessionEntry = {
       id: sessionId,
@@ -1519,6 +1522,7 @@ ${agentInstructions}
     const droppedEntries = sortedEntries.filter((item) => !keptIds.has(item.id));
     index.entries = keptEntries;
     this.saveSessionsIndex(index);
+    unlockIndex();
     for (const dropped of droppedEntries) {
       this.cleanupSessionResources(dropped.id, {
         removeMessages: true,
@@ -2071,12 +2075,14 @@ ${agentInstructions}
     multimodal?: MultimodalMode;
     webSearchEnabled: boolean;
     nonInteractive: boolean;
+    disallowedTools?: string[];
   } {
     return {
       model: this.getResolvedSettings().model,
       multimodal: this.getResolvedSettings().multimodal,
       webSearchEnabled: true,
       nonInteractive: this.nonInteractive,
+      disallowedTools: this.getResolvedSettings().disallowedTools,
     };
   }
 
@@ -2327,6 +2333,7 @@ ${agentInstructions}
     this.saveSessionMessages(sessionId, forkedMessages);
     this.getFileHistory().forkSession(sourceSessionId, sessionId);
 
+    const unlockIndex = this.lockSessionsIndex();
     const index = this.loadSessionsIndex();
     index.entries.push(entry);
     const sortedEntries = index.entries.slice().sort((a, b) => {
@@ -2342,6 +2349,7 @@ ${agentInstructions}
     const droppedEntries = sortedEntries.filter((item) => !keptIds.has(item.id));
     index.entries = keptEntries;
     this.saveSessionsIndex(index);
+    unlockIndex();
     for (const dropped of droppedEntries) {
       this.cleanupSessionResources(dropped.id, {
         removeMessages: true,
@@ -2360,15 +2368,18 @@ ${agentInstructions}
    * Returns true if the session was found and deleted, false otherwise.
    */
   deleteSession(sessionId: string): boolean {
+    const unlockIndex = this.lockSessionsIndex();
     const index = this.loadSessionsIndex();
     const targetEntry = index.entries.find((entry) => entry.id === sessionId) ?? null;
     const nextEntries = index.entries.filter((entry) => entry.id !== sessionId);
     if (nextEntries.length === index.entries.length) {
+      unlockIndex();
       return false;
     }
 
     index.entries = nextEntries;
     this.saveSessionsIndex(index);
+    unlockIndex();
     this.cleanupSessionResources(sessionId, {
       removeMessages: true,
       processIds: this.getProcessIds(targetEntry?.processes ?? null),
@@ -2619,7 +2630,37 @@ ${agentInstructions}
       })),
       originalPath: this.projectRoot,
     };
-    fs.writeFileSync(sessionsIndexPath, JSON.stringify(normalized, null, 2), "utf8");
+    // dsh patch: atomic replace, so a concurrent reader never sees a half-written index
+    // (a failed parse reads as "no sessions" and the next save would drop every other session).
+    const tmpPath = `${sessionsIndexPath}.${process.pid}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(normalized, null, 2), "utf8");
+    fs.renameSync(tmpPath, sessionsIndexPath);
+  }
+
+  /**
+   * dsh patch: cross-process lock around read-modify-write of sessions-index.json, for parallel runs
+   * in one project. The guarded sections are synchronous and short; a lock older than 10s is treated
+   * as left behind by a crashed process and removed.
+   */
+  private lockSessionsIndex(): () => void {
+    const { sessionsIndexPath } = this.getProjectStorage();
+    this.ensureProjectDir();
+    const lockPath = `${sessionsIndexPath}.lock`;
+    const pause = new Int32Array(new SharedArrayBuffer(4));
+    for (;;) {
+      try {
+        fs.closeSync(fs.openSync(lockPath, "wx"));
+        return () => fs.rmSync(lockPath, { force: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        try {
+          if (Date.now() - fs.statSync(lockPath).mtimeMs > 10_000) fs.rmSync(lockPath, { force: true });
+        } catch {
+          // released meanwhile
+        }
+        Atomics.wait(pause, 0, 0, 5);
+      }
+    }
   }
 
   private getSessionMessagesPath(sessionId: string): string {
@@ -2694,15 +2735,22 @@ ${agentInstructions}
   }
 
   private updateSessionEntry(sessionId: string, updater: (entry: SessionEntry) => SessionEntry): SessionEntry | null {
+    const unlockIndex = this.lockSessionsIndex();
     const index = this.loadSessionsIndex();
     const entryIndex = index.entries.findIndex((entry) => entry.id === sessionId);
     if (entryIndex === -1) {
+      unlockIndex();
       return null;
     }
 
-    const updated = updater({ ...index.entries[entryIndex] });
-    index.entries[entryIndex] = updated;
-    this.saveSessionsIndex(index);
+    let updated: SessionEntry;
+    try {
+      updated = updater({ ...index.entries[entryIndex] });
+      index.entries[entryIndex] = updated;
+      this.saveSessionsIndex(index);
+    } finally {
+      unlockIndex();
+    }
     this.onSessionEntryUpdated?.(updated);
     return updated;
   }
@@ -3120,6 +3168,13 @@ ${agentInstructions}
     for (const toolCall of parsedToolCalls) {
       if (hooks.shouldStop?.()) {
         break;
+      }
+      // dsh patch: a removed tool can still be named by the model; refuse it instead of running it.
+      if (this.getResolvedSettings().disallowedTools?.includes(toolCall.function.name)) {
+        const error = `Tool not available in this session: ${toolCall.function.name}`;
+        const result = { ok: false, name: toolCall.function.name, error };
+        toolExecutions.push({ toolCallId: toolCall.id, content: JSON.stringify(result), result });
+        continue;
       }
       const blockedResult = buildPermissionToolExecution(toolCall, options);
       if (blockedResult) {

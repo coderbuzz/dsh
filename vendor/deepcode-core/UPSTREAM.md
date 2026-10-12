@@ -6,6 +6,7 @@
 - Copied: `src/` (without `src/tests/`) and `templates/`.
 - Local patches in `vendor/patches/` (applied by the sync script):
   - `reasoning-effort-top-level.patch`: `reasoning_effort` sent top level instead of `extra_body` (DeepSeek ignores `extra_body` from the Node SDK; upstream bug).
+  - `orchestrator.patch`: `disallowedTools` setting (tool removed from schema and docs, refused if called), and a lock file + atomic write for `sessions-index.json` so parallel runs in one project do not lose sessions.
 
 Why vendored: `@vegamo/deepcode-core` is not published on npm.
 Update: `scripts/sync-upstream.sh <ref>`, then rebuild and run the tests.

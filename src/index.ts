@@ -11,6 +11,7 @@ import {
   getDefaultAutoCompactWindow,
   getDefaultContextWindow,
   getSnippet,
+  getTools,
   resolveCurrentSettings,
   supportsMultimodal,
   type CreateOpenAIClient,
@@ -21,6 +22,7 @@ import {
 import type {
   DshEvent,
   HarnessOptions,
+  Mode,
   ModelCapability,
   Permissions,
   ReasoningEffort,
@@ -48,6 +50,26 @@ export const ALLOW_ALL_PERMISSIONS: Permissions = {
   addWorkingDirs: [],
 };
 
+const READ_SCOPES = ["read-in-cwd", "read-in-tmp", "read-out-cwd", "query-git-log", "network", "mcp"] as const;
+// defaultMode stays allowAll: bash calls with "unknown" scopes would otherwise stop the run to ask.
+export const MODE_PERMISSIONS: Record<Mode, Permissions> = {
+  plan: {
+    allow: [...READ_SCOPES],
+    deny: ["write-in-cwd", "write-in-tmp", "write-out-cwd", "delete-in-cwd", "delete-out-cwd", "mutate-git-log"],
+    ask: [],
+    defaultMode: "allowAll",
+    addWorkingDirs: [],
+  },
+  edit: {
+    allow: [...READ_SCOPES, "write-in-cwd", "write-in-tmp", "delete-in-cwd"],
+    deny: ["write-out-cwd", "delete-out-cwd", "mutate-git-log"],
+    ask: [],
+    defaultMode: "allowAll",
+    addWorkingDirs: [],
+  },
+  yolo: ALLOW_ALL_PERMISSIONS,
+};
+
 // Classifying side effects = asking "what would need approval if nothing were allowed".
 const CLASSIFY_ONLY: Permissions = { allow: [], deny: [], ask: [], defaultMode: "askAll", addWorkingDirs: [] };
 
@@ -65,22 +87,29 @@ export type Harness = {
  */
 export async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
   const cwd = path.resolve(options.cwd ?? process.cwd());
-  const permissions = options.permissions ?? ALLOW_ALL_PERMISSIONS;
+  const permissions = options.permissions ?? MODE_PERMISSIONS[options.mode ?? "yolo"];
+  // Case-insensitive, so zh-style names ("Bash", "WebSearch") work too.
+  const toolNames = getTools({}).map((t) => t.function.name);
+  const disallowedTools = options.disallowedTools?.length
+    ? options.disallowedTools.map((n) => toolNames.find((t) => t.toLowerCase() === n.toLowerCase()) ?? n)
+    : undefined;
   let overrides: Overrides = {};
   let listener: { onMessage(m: SessionMessage): void; onEntry(e: SessionEntry): void; onStdout(pid: number, chunk: string): void } | null =
     null;
 
   const base = createOpenAIClientFactory(cwd);
-  const factory: CreateOpenAIClient = Object.assign(() => ({ ...base(), ...defined(overrides) }), {
-    prepare: base.prepare,
-  });
+  const factory: CreateOpenAIClient = Object.assign(
+    // Telemetry (a ping per prompt to the upstream vendor) is off unless explicitly enabled.
+    () => ({ ...base(), telemetryEnabled: process.env["DEEPCODE_TELEMETRY_ENABLED"] === "true", ...defined(overrides) }),
+    { prepare: base.prepare }
+  );
 
   const manager = new SessionManager({
     projectRoot: cwd,
     createOpenAIClient: factory,
     getResolvedSettings: () => {
       const settings = resolveCurrentSettings(cwd);
-      return { ...settings, model: overrides.model ?? settings.model, permissions };
+      return { ...settings, model: overrides.model ?? settings.model, permissions, disallowedTools };
     },
     renderMarkdown: (text) => text,
     nonInteractive: true,
@@ -171,9 +200,17 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     };
 
     const controller = new AbortController();
-    const abort = () => controller.abort();
+    // interruptSession also kills the session's child processes; a bare abort would leave them running.
+    const abort = () => (sessionId && manager.getSession(sessionId) ? manager.interruptSession(sessionId) : controller.abort());
     opts.signal?.addEventListener("abort", abort, { once: true });
     if (opts.signal?.aborted) controller.abort();
+    let timedOut = false;
+    const timer = opts.timeoutMs
+      ? setTimeout(() => {
+          timedOut = true;
+          abort();
+        }, opts.timeoutMs)
+      : undefined;
 
     let error: string | null = null;
     try {
@@ -190,11 +227,13 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
       error = err instanceof Error ? err.message : String(err);
     } finally {
       opts.signal?.removeEventListener("abort", abort);
+      clearTimeout(timer);
       listener = null;
     }
 
     const entry = sessionId ? manager.getSession(sessionId) : null;
-    const status: RunStatus = controller.signal.aborted ? "interrupted" : error ? "failed" : mapStatus(entry?.status);
+    if (timedOut) error = `timeout after ${opts.timeoutMs}ms`;
+    const status: RunStatus = timedOut || error ? "failed" : controller.signal.aborted ? "interrupted" : mapStatus(entry?.status);
     const result: RunResult = {
       sessionId,
       status,

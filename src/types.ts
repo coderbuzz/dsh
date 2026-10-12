@@ -28,9 +28,18 @@ export type Permissions = {
 export type HarnessOptions = {
   /** Project root the agent works in. Default: process.cwd(). */
   cwd?: string;
-  /** Default: allow everything (no TTY to ask). */
+  /**
+   * Permission preset (same names as zh): "plan" read-only, "edit" writes inside cwd/tmp, "yolo" everything (default).
+   * Scopes of bash commands are declared by the model, so for a hard read-only boundary also disallow "bash".
+   */
+  mode?: Mode;
+  /** Overrides `mode`. */
   permissions?: Permissions;
+  /** Tool names removed from the model's tool list and refused if called anyway (e.g. ["bash", "WebSearch"]). */
+  disallowedTools?: string[];
 };
+
+export type Mode = "plan" | "edit" | "yolo";
 
 export type RunOptions = {
   /** Continue this session (replySession) instead of creating a new one. Keeps the prefix cache hot. */
@@ -41,6 +50,8 @@ export type RunOptions = {
   /** 0.0 - 2.0 */
   temperature?: number;
   signal?: AbortSignal;
+  /** Wall-clock limit; the run is interrupted (child processes killed) and reported as failed. */
+  timeoutMs?: number;
   onEvent?: (event: DshEvent) => void;
 };
 
