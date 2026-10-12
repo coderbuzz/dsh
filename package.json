@@ -1,6 +1,6 @@
 {
   "name": "@coderbuzz/dsh",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "DeepSeek harness for orchestrators: structured JSON SDK and CLI on top of the deepcode-cli engine",
   "license": "MIT",
   "repository": {

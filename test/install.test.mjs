@@ -8,16 +8,18 @@ import os from "node:os";
 import path from "node:path";
 
 const run = promisify(execFile);
+// `npm publish` runs this via prepublishOnly and leaks npm_* config (dry-run, command, ...) into child npm calls.
+const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.toLowerCase().startsWith("npm_")));
 const script = path.resolve("install.sh");
 const version = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
 
 test("install.sh: install, rerun, refuse to overwrite, uninstall", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-inst-"));
-  const packed = (await run("npm", ["pack", "--pack-destination", tmp, "--ignore-scripts", "--json"])).stdout;
+  const packed = (await run("npm", ["pack", "--pack-destination", tmp, "--ignore-scripts", "--json"], { env: cleanEnv })).stdout;
   const tarball = path.join(tmp, JSON.parse(packed)[0].filename);
   const prefix = path.join(tmp, "prefix");
   const bin = path.join(tmp, "bin");
-  const env = { ...process.env, DSH_PACKAGE: tarball, HOME: tmp };
+  const env = { ...cleanEnv, DSH_PACKAGE: tarball, HOME: tmp };
   const install = (...args) => run("sh", [script, "--prefix", prefix, "--bin-dir", bin, ...args], { env });
 
   const first = await install();
