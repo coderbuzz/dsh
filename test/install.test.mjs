@@ -15,8 +15,10 @@ const version = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
 
 test("install.sh: install, rerun, refuse to overwrite, uninstall", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-inst-"));
-  const packed = (await run("npm", ["pack", "--pack-destination", tmp, "--ignore-scripts", "--json"], { env: cleanEnv })).stdout;
-  const tarball = path.join(tmp, JSON.parse(packed)[0].filename);
+  const packed = await run("npm", ["pack", "--pack-destination", tmp, "--ignore-scripts"], { env: cleanEnv });
+  const name = fs.readdirSync(tmp).find((f) => f.endsWith(".tgz"));
+  assert.ok(name, `npm pack made no tarball:\n${packed.stdout}\n${packed.stderr}`);
+  const tarball = path.join(tmp, name);
   const prefix = path.join(tmp, "prefix");
   const bin = path.join(tmp, "bin");
   const env = { ...cleanEnv, DSH_PACKAGE: tarball, HOME: tmp };
