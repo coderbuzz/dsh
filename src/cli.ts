@@ -1,4 +1,5 @@
 import { parseArgs } from "node:util";
+import pkg from "../package.json" with { type: "json" };
 import { getAvailableModels, run } from "./index.js";
 import type { Mode, ReasoningEffort } from "./types.js";
 
@@ -19,6 +20,7 @@ Options:
   --mode <mode>          plan (read-only) | edit (writes in cwd/tmp) | yolo (default, everything)
   --disallowed-tools <a,b>  Remove tools, e.g. bash,WebSearch (bash scopes are self-declared: remove it for read-only)
   --timeout <seconds>    Stop the run (and its child processes) and report failed
+  -v, --version
   -h, --help
 
 API key: DEEPCODE_API_KEY env or ~/.deepcode/settings.json (same as deepcode-cli).
@@ -48,8 +50,13 @@ async function main(): Promise<number> {
       cwd: { type: "string", short: "C" },
       refresh: { type: "boolean" },
       help: { type: "boolean", short: "h" },
+      version: { type: "boolean", short: "v" },
     },
   });
+  if (values.version) {
+    process.stdout.write(`${pkg.version}\n`);
+    return 0;
+  }
   if (values.help) {
     process.stdout.write(USAGE + "\n");
     return 0;
