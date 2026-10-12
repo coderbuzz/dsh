@@ -10,7 +10,7 @@
   "homepage": "https://github.com/coderbuzz/dsh#readme",
   "type": "module",
   "bin": {
-    "dsh": "./dist/cli.js"
+    "dsh": "dist/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/types/src/index.d.ts",
