@@ -1,0 +1,13 @@
+// dsh as one native binary: Tov runs the bundled CLI (dist/binary.js, from `DSH_BINARY=1 node scripts/build.mjs`)
+// in its JavaScript realm. Build: scripts/build-binary.sh
+import { runBinary } from "dsh-dist/binary.js"
+
+async function main(): Promise<int> {
+  try {
+    return (try await runBinary()) as int
+  } catch (e) {
+    // runBinary catches its own errors; this is for ones Tov's bridge raises
+    console.error(`dsh: ${e.message}`)
+    return 1
+  }
+}

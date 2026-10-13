@@ -1,2 +1,4 @@
 node_modules/
 dist/
+dsh-native
+tov/node_modules

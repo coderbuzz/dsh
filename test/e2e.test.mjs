@@ -20,6 +20,11 @@ function sse(res, delta, withUsage) {
   res.end(chunk(delta) + `data: ${JSON.stringify(done)}\n\n` + (withUsage ? chunk(null, { usage }) : "") + "data: [DONE]\n\n");
 }
 
+function apiError(res, status, message) {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify({ error: { message, type: "invalid_request_error", code: "invalid_request_error" } }));
+}
+
 const server = http.createServer(async (req, res) => {
   let body = "";
   for await (const c of req) body += c;
@@ -28,6 +33,8 @@ const server = http.createServer(async (req, res) => {
     return res.end(JSON.stringify({ object: "list", data: [{ id: "deepseek-v4-pro", object: "model" }] }));
   }
   const json = JSON.parse(body);
+  if (req.headers.authorization === "Bearer bad") return apiError(res, 401, "Authentication Fails, Your api key is invalid");
+  if (json.model === "no-such-model") return apiError(res, 400, "The supported API model names are deepseek-v4-pro");
   if (!json.tools) return sse(res, { role: "assistant", content: "[]" }, false); // skill matching
   requests.push(json);
   const last = json.messages.at(-1);
@@ -36,7 +43,12 @@ const server = http.createServer(async (req, res) => {
   const user = JSON.stringify(json.messages.filter((m) => m.role === "user").at(-1)?.content);
   if (user.includes("PARALLEL")) return sse(res, { role: "assistant", content: "parallel-done" }, true);
   if (user.includes("BIGREPLY")) return sse(res, { role: "assistant", content: "x".repeat(200000) }, true);
-  const command = user.includes("BIGFAIL")
+  if (user.includes("BADTOOL") && last.role === "user") {
+    return sse(res, { role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "bash", arguments: "{not json" } }] }, true);
+  }
+  const command = user.includes("FAILTOOL")
+    ? "echo partial; exit 7"
+    : user.includes("BIGFAIL")
     ? "head -c 200000 /dev/zero | tr '\\0' y; sleep 37.25"
     : user.includes("SLEEP")
     ? "sleep 37.25"
@@ -52,6 +64,9 @@ const server = http.createServer(async (req, res) => {
 
 const run = promisify(execFile);
 const cli = path.resolve("dist/cli.js");
+// DSH_BIN=./dsh-native runs the suite against the native binary (scripts/build-binary.sh) instead of node.
+const exe = process.env.DSH_BIN ? path.resolve(process.env.DSH_BIN) : "node";
+const pre = process.env.DSH_BIN ? [] : [cli];
 
 let cwd, env;
 test.before(async () => {
@@ -68,7 +83,7 @@ test.after(() => server.close());
 
 test("cli --json, then --stream-json resume", async () => {
 
-  const first = await run("node", [cli, "--json", "-m", "deepseek-v4-pro", "-e", "high", "-t", "0.3", "say hi"], { cwd, env });
+  const first = await run(exe, [...pre, "--json", "-m", "deepseek-v4-pro", "-e", "high", "-t", "0.3", "say hi"], { cwd, env });
   const r1 = JSON.parse(first.stdout);
   assert.equal(r1.status, "completed", r1.failReason);
   assert.equal(r1.reply, "done");
@@ -91,7 +106,7 @@ test("cli --json, then --stream-json resume", async () => {
   assert.equal(req.reasoning_effort, "high");
   assert.equal(req.extra_body, undefined);
 
-  const second = await run("node", [cli, "--stream-json", "--no-thinking", "-m", "deepseek-v4-pro", "-r", r1.sessionId, "again"], { cwd, env });
+  const second = await run(exe, [...pre, "--stream-json", "--no-thinking", "-m", "deepseek-v4-pro", "-r", r1.sessionId, "again"], { cwd, env });
   const events = second.stdout.trim().split("\n").map((l) => JSON.parse(l));
   const r2 = events.at(-1);
   assert.equal(r2.type, "result");
@@ -106,18 +121,18 @@ test("cli --json, then --stream-json resume", async () => {
   const prior = requests[1].messages; // turn 1's last request
   assert.deepEqual(resumed.messages.slice(0, prior.length), prior, "resume keeps the message prefix stable");
 
-  await assert.rejects(run("node", [cli, "--json", "-r", "00000000-0000-0000-0000-000000000000", "x"], { cwd, env }), (err) => {
+  await assert.rejects(run(exe, [...pre, "--json", "-r", "00000000-0000-0000-0000-000000000000", "x"], { cwd, env }), (err) => {
     assert.equal(JSON.parse(err.stdout).status, "failed");
     return true;
   });
 
-  const models = JSON.parse((await run("node", [cli, "models", "--json", "--refresh"], { cwd, env })).stdout);
+  const models = JSON.parse((await run(exe, [...pre, "models", "--json", "--refresh"], { cwd, env })).stdout);
   assert.deepEqual(models.map((m) => m.id), ["deepseek-v4-pro"]);
 });
 
 test("plan mode without bash: tool removed and refused if called anyway", async () => {
   const n = requests.length;
-  const out = await run("node", [cli, "--json", "--mode", "plan", "--disallowed-tools", "Bash", "-p", "-- say hi"], { cwd, env });
+  const out = await run(exe, [...pre, "--json", "--mode", "plan", "--disallowed-tools", "Bash", "-p", "-- say hi"], { cwd, env });
   const r = JSON.parse(out.stdout);
   assert.equal(r.status, "completed", r.failReason);
   const req = requests[n];
@@ -130,7 +145,7 @@ test("plan mode without bash: tool removed and refused if called anyway", async 
 
 test("timeout stops the run and kills its child processes", async () => {
   const t0 = Date.now();
-  const err = await run("node", [cli, "--json", "--timeout", "2", "SLEEP please"], { cwd, env }).catch((e) => e);
+  const err = await run(exe, [...pre, "--json", "--timeout", "2", "SLEEP please"], { cwd, env }).catch((e) => e);
   const r = JSON.parse(err.stdout);
   assert.equal(r.status, "failed");
   assert.match(r.failReason, /timeout/);
@@ -145,15 +160,16 @@ test("timeout stops the run and kills its child processes", async () => {
 });
 
 test("parallel runs in one project keep every session resumable", async () => {
-  const outs = await Promise.all([1, 2, 3, 4].map((i) => run("node", [cli, "--json", `PARALLEL ${i}`], { cwd, env })));
+  const outs = await Promise.all([1, 2, 3, 4].map((i) => run(exe, [...pre, "--json", `PARALLEL ${i}`], { cwd, env })));
   const ids = outs.map((o) => JSON.parse(o.stdout).sessionId);
   for (const id of ids) {
-    const r = JSON.parse((await run("node", [cli, "--json", "-r", id, "PARALLEL again"], { cwd, env }).catch((e) => e)).stdout);
+    const r = JSON.parse((await run(exe, [...pre, "--json", "-r", id, "PARALLEL again"], { cwd, env }).catch((e) => e)).stdout);
     assert.equal(r.status, "completed", `session ${id}: ${r.failReason}`);
   }
 });
 
-test("telemetry is off unless DEEPCODE_TELEMETRY_ENABLED=true", async () => {
+// node --import has no equivalent in the binary; it runs the same bundled telemetry code.
+test("telemetry is off unless DEEPCODE_TELEMETRY_ENABLED=true", { skip: !!process.env.DSH_BIN && "needs node --import" }, async () => {
   // Preload: record every global fetch URL on stderr and answer locally (telemetry uses global fetch).
   const spy = "data:text/javascript," + encodeURIComponent(
     "const f=globalThis.fetch;globalThis.fetch=(u,o)=>{const s=String(u);if(!s.startsWith('http://127.0.0.1')){process.stderr.write('FETCH '+s+'\\n');return Promise.resolve(new Response('{}'))}return f(u,o)}"
@@ -166,7 +182,7 @@ test("telemetry is off unless DEEPCODE_TELEMETRY_ENABLED=true", async () => {
 });
 
 test("agent bash does not see the provider API key, but keeps other env", async () => {
-  const out = await run("node", [cli, "--json", "ENVCHECK"], { cwd, env: { ...env, DEEPCODE_PLUS_API_KEY: "sk-x", MARK: "kept", OTHER_API_KEY: "mine" } });
+  const out = await run(exe, [...pre, "--json", "ENVCHECK"], { cwd, env: { ...env, DEEPCODE_PLUS_API_KEY: "sk-x", MARK: "kept", OTHER_API_KEY: "mine" } });
   const r = JSON.parse(out.stdout);
   assert.equal(r.status, "completed", r.failReason);
   // 0 = none of DEEPCODE_API_KEY, DEEPCODE_PLUS_API_KEY and the prefix-stripped API_KEY/PLUS_API_KEY reach the shell;
@@ -174,13 +190,39 @@ test("agent bash does not see the provider API key, but keeps other env", async 
   assert.equal(r.toolExecutions[0].process_stdout, "0\nMARK=kept USERVAR=mine\n");
 });
 
+// Every failure must come back as a controlled result: status "failed" + reason (exit 1) for API errors,
+// an error tool result (run continues) for tool failures. Never a crash, an empty stdout, or a silent success.
+test("error paths: bad API key, unknown model, failing and malformed tool calls", async () => {
+  for (const [args, extraEnv, reason] of [
+    [["--json", "x"], { DEEPCODE_API_KEY: "bad" }, /401/],
+    [["--json", "-m", "no-such-model", "x"], {}, /400.*model/],
+  ]) {
+    const err = await run(exe, [...pre, ...args], { cwd, env: { ...env, ...extraEnv } }).catch((e) => e);
+    assert.equal(err.code, 1, err.stderr);
+    const r = JSON.parse(err.stdout);
+    assert.equal(r.status, "failed");
+    assert.match(r.failReason, reason);
+  }
+  const fail = JSON.parse((await run(exe, [...pre, "--json", "FAILTOOL"], { cwd, env })).stdout);
+  assert.equal(fail.status, "completed", fail.failReason);
+  assert.equal(fail.toolExecutions[0].result.metadata.exitCode, 7);
+  assert.equal(fail.toolExecutions[0].process_stdout, "partial\n");
+  const bad = JSON.parse((await run(exe, [...pre, "--json", "BADTOOL"], { cwd, env })).stdout);
+  assert.equal(bad.status, "completed", bad.failReason);
+  assert.equal(bad.toolExecutions[0].result.ok, false);
+  assert.ok(bad.toolExecutions[0].result.error, "malformed arguments reported to the model");
+});
+
 // Regression: stdout read through a slow pipe was cut at 64 KiB because the CLI called process.exit
 // before the pipe drained. The reader here waits before consuming, so the pipe buffer fills.
 const viaSlowPipe = (args) => new Promise((resolve) => {
-  const child = spawn("node", [cli, ...args], { cwd, env, stdio: ["ignore", "pipe", "ignore"] });
+  const child = spawn(exe, [...pre, ...args], { cwd, env, stdio: ["ignore", "pipe", "ignore"] });
   const chunks = [];
+  // listener first, then pause: if the child exits while paused, Node resumes the stream (flushStdio)
+  // and data without a listener is dropped (a fast exit, like the native binary's, hits that).
+  child.stdout.on("data", (c) => chunks.push(c));
   child.stdout.pause();
-  setTimeout(() => { child.stdout.on("data", (c) => chunks.push(c)); child.stdout.resume(); }, 1500);
+  setTimeout(() => child.stdout.resume(), 1500);
   child.on("close", (code) => resolve({ code, out: Buffer.concat(chunks).toString() }));
 });
 

@@ -152,8 +152,19 @@ Node OpenAI SDK passes through as a literal key and DeepSeek ignores; dsh patche
 `npm test` builds and runs an end-to-end test against a fake DeepSeek server (no key needed):
 a tool call, a resume, overrides, usage accounting, a stable message prefix, plan mode without bash,
 timeout killing child processes, parallel runs in one project, telemetry staying off, the API key hidden from the agent's
-shell, and `install.sh` (install, rerun, uninstall, never overwriting a foreign file) on the packed tarball.
+shell, error paths (bad key, unknown model, failing and malformed tool calls), and `install.sh` (install, rerun, uninstall, never overwriting a foreign file) on the packed tarball.
 The installer test needs network access for the dependencies (~20 s).
+
+## Native binary (experimental)
+
+`scripts/build-binary.sh` compiles dsh into one native executable, `./dsh-native`, with [Tov](https://tov.sh): the bundled
+CLI runs in Tov's JavaScript realm, with the core's templates embedded (unpacked once to `~/.cache/dsh/`). No Node.js or
+`node_modules` at runtime. Needs tov on PATH, built with its own JavaScriptCore (`scripts/jsc/build.sh` in Tov's checkout)
+for a binary that only links glibc, libstdc++ and ICU. `DSH_BIN=./dsh-native node --test test/e2e.test.mjs` runs the
+e2e suite against it. Differences from Node, handled in `src/binary.ts` and `scripts/undici-tov.js`: stdin is read with
+`readFileSync(0)`, the exit code is returned to Tov rather than set on `process.exitCode`, and the OpenAI client uses Tov's
+native `fetch` (Tov has no `node:tls` yet). Tov at ba81eb0 also needs a one-line runtime fix for `detached` spawns, or a
+timeout kills the shell but not its children.
 
 ## Release
 
