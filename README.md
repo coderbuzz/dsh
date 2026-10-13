@@ -152,7 +152,7 @@ Node OpenAI SDK passes through as a literal key and DeepSeek ignores; dsh patche
 `npm test` builds and runs an end-to-end test against a fake DeepSeek server (no key needed):
 a tool call, a resume, overrides, usage accounting, a stable message prefix, plan mode without bash,
 timeout killing child processes, parallel runs in one project, telemetry staying off, the API key hidden from the agent's
-shell, and `install.sh` (install, rerun, uninstall, never overwriting a foreign file) on the packed tarball.
+shell, error paths (bad key, unknown model, failing and malformed tool calls), and `install.sh` (install, rerun, uninstall, never overwriting a foreign file) on the packed tarball.
 The installer test needs network access for the dependencies (~20 s).
 
 ## Release
