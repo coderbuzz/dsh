@@ -20,6 +20,11 @@ function sse(res, delta, withUsage) {
   res.end(chunk(delta) + `data: ${JSON.stringify(done)}\n\n` + (withUsage ? chunk(null, { usage }) : "") + "data: [DONE]\n\n");
 }
 
+function apiError(res, status, message) {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify({ error: { message, type: "invalid_request_error", code: "invalid_request_error" } }));
+}
+
 const server = http.createServer(async (req, res) => {
   let body = "";
   for await (const c of req) body += c;
@@ -28,6 +33,8 @@ const server = http.createServer(async (req, res) => {
     return res.end(JSON.stringify({ object: "list", data: [{ id: "deepseek-v4-pro", object: "model" }] }));
   }
   const json = JSON.parse(body);
+  if (req.headers.authorization === "Bearer bad") return apiError(res, 401, "Authentication Fails, Your api key is invalid");
+  if (json.model === "no-such-model") return apiError(res, 400, "The supported API model names are deepseek-v4-pro");
   if (!json.tools) return sse(res, { role: "assistant", content: "[]" }, false); // skill matching
   requests.push(json);
   const last = json.messages.at(-1);
@@ -36,7 +43,12 @@ const server = http.createServer(async (req, res) => {
   const user = JSON.stringify(json.messages.filter((m) => m.role === "user").at(-1)?.content);
   if (user.includes("PARALLEL")) return sse(res, { role: "assistant", content: "parallel-done" }, true);
   if (user.includes("BIGREPLY")) return sse(res, { role: "assistant", content: "x".repeat(200000) }, true);
-  const command = user.includes("BIGFAIL")
+  if (user.includes("BADTOOL") && last.role === "user") {
+    return sse(res, { role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "bash", arguments: "{not json" } }] }, true);
+  }
+  const command = user.includes("FAILTOOL")
+    ? "echo partial; exit 7"
+    : user.includes("BIGFAIL")
     ? "head -c 200000 /dev/zero | tr '\\0' y; sleep 37.25"
     : user.includes("SLEEP")
     ? "sleep 37.25"
@@ -174,13 +186,39 @@ test("agent bash does not see the provider API key, but keeps other env", async 
   assert.equal(r.toolExecutions[0].process_stdout, "0\nMARK=kept USERVAR=mine\n");
 });
 
+// Every failure must come back as a controlled result: status "failed" + reason (exit 1) for API errors,
+// an error tool result (run continues) for tool failures. Never a crash, an empty stdout, or a silent success.
+test("error paths: bad API key, unknown model, failing and malformed tool calls", async () => {
+  for (const [args, extraEnv, reason] of [
+    [["--json", "x"], { DEEPCODE_API_KEY: "bad" }, /401/],
+    [["--json", "-m", "no-such-model", "x"], {}, /400.*model/],
+  ]) {
+    const err = await run("node", [cli, ...args], { cwd, env: { ...env, ...extraEnv } }).catch((e) => e);
+    assert.equal(err.code, 1, err.stderr);
+    const r = JSON.parse(err.stdout);
+    assert.equal(r.status, "failed");
+    assert.match(r.failReason, reason);
+  }
+  const fail = JSON.parse((await run("node", [cli, "--json", "FAILTOOL"], { cwd, env })).stdout);
+  assert.equal(fail.status, "completed", fail.failReason);
+  assert.equal(fail.toolExecutions[0].result.metadata.exitCode, 7);
+  assert.equal(fail.toolExecutions[0].process_stdout, "partial\n");
+  const bad = JSON.parse((await run("node", [cli, "--json", "BADTOOL"], { cwd, env })).stdout);
+  assert.equal(bad.status, "completed", bad.failReason);
+  assert.equal(bad.toolExecutions[0].result.ok, false);
+  assert.ok(bad.toolExecutions[0].result.error, "malformed arguments reported to the model");
+});
+
 // Regression: stdout read through a slow pipe was cut at 64 KiB because the CLI called process.exit
 // before the pipe drained. The reader here waits before consuming, so the pipe buffer fills.
 const viaSlowPipe = (args) => new Promise((resolve) => {
   const child = spawn("node", [cli, ...args], { cwd, env, stdio: ["ignore", "pipe", "ignore"] });
   const chunks = [];
+  // listener first, then pause: if the child exits while paused, Node resumes the stream (flushStdio)
+  // and data without a listener is dropped (a child that exits quickly hits that).
+  child.stdout.on("data", (c) => chunks.push(c));
   child.stdout.pause();
-  setTimeout(() => { child.stdout.on("data", (c) => chunks.push(c)); child.stdout.resume(); }, 1500);
+  setTimeout(() => child.stdout.resume(), 1500);
   child.on("close", (code) => resolve({ code, out: Buffer.concat(chunks).toString() }));
 });
 
