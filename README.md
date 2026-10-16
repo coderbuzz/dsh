@@ -137,9 +137,9 @@ appends to it. Measured on the real API (2026-10-12): 91-98% cache hits on conti
 
 ## Reasoning effort
 
-`low | high | max`, sent as top-level `reasoning_effort`. Upstream sends it inside `extra_body`, which the
-Node OpenAI SDK passes through as a literal key and DeepSeek ignores; dsh patches this
-(`vendor/patches/reasoning-effort-top-level.patch`). `--effort disabled` turns thinking off.
+`low | high | max`, sent as top-level `reasoning_effort`. Upstream originally sent it inside `extra_body`, which the
+Node OpenAI SDK passes through as a literal key and DeepSeek ignores; the fix was merged upstream
+(lessweb/deepcode-cli#370) and ships in the vendored engine since `03c7ebb`. `--effort disabled` turns thinking off.
 
 ## Models
 

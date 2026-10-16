@@ -6,9 +6,8 @@ type ThinkingConfig = {
 
 type ThinkingRequestOptions = {
   thinking?: ThinkingConfig;
-  // dsh patch: top level, not `extra_body`. The Node OpenAI SDK sends `extra_body` as a literal
-  // JSON key, which the DeepSeek API ignores (verified 2026-10-12: a bogus top-level value is
-  // rejected with 422, a bogus `extra_body.reasoning_effort` is accepted with 200).
+  // Top level, not `extra_body`: `extra_body` is a Python-SDK convention. The Node OpenAI SDK sends it
+  // as a literal JSON key, which the DeepSeek API ignores.
   reasoning_effort?: ReasoningEffort;
 };
 
